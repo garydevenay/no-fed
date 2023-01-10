@@ -3,17 +3,15 @@ package main
 import (
 	"crypto/rsa"
 	"fmt"
-	"net/http"
-	"os"
-	"strings"
-	"time"
-
-	"github.com/fiatjaf/litepub"
 	"github.com/fiatjaf/relayer"
 	"github.com/jmoiron/sqlx"
 	"github.com/kelseyhightower/envconfig"
 	_ "github.com/lib/pq"
 	"github.com/rs/zerolog"
+	"net/http"
+	"os"
+	"strings"
+	"time"
 )
 
 type Settings struct {
@@ -45,16 +43,16 @@ func main() {
 	s.RelayURL = strings.Replace(s.ServiceURL, "http", "ws", 1)
 
 	// key stuff (needed for the activitypub integration)
-	var seed [4]byte
-	copy(seed[:], []byte(s.Secret))
-	s.PrivateKey, err = litepub.GeneratePrivateKey(seed)
+	keys, err := GenerateKeys(s.Secret)
 	if err != nil {
-		log.Fatal().Err(err).Msg("error deriving private key")
+		log.Fatal().Err(err).Msg("Error generating keys.")
 		return
 	}
-	s.PublicKeyPEM, err = litepub.PublicKeyToPEM(&s.PrivateKey.PublicKey)
+
+	s.PrivateKey = keys.PrivateKey
+	s.PublicKeyPEM, err = keys.GetPublicKeyPEM()
 	if err != nil {
-		log.Fatal().Err(err).Msg("error deriving public key")
+		log.Fatal().Err(err).Msg("Error getting public key.")
 		return
 	}
 
@@ -63,17 +61,15 @@ func main() {
 	log = log.With().Timestamp().Logger()
 
 	// postgres connection
-	pg, err = initDB(s.PostgresURL)
+	postgres := NewDatabase(s.PostgresURL)
+	err = postgres.Setup()
 	if err != nil {
 		log.Fatal().Err(err).Msg("couldn't connect to postgres")
 		return
 	}
 
-	// cache expirer
-	go func() {
-		time.Sleep(2 * time.Hour)
-		pg.Exec("DELETE FROM cache WHERE expiration < now()")
-	}()
+	// cache duration
+	postgres.SetCacheDuration(2 * time.Hour)
 
 	// define routes
 	relayer.Router.Path("/icon.svg").Methods("GET").HandlerFunc(
