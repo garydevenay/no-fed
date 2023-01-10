@@ -79,14 +79,14 @@ func main() {
 			return
 		})
 
-	relayer.Router.Path("/pub").Methods("POST").HandlerFunc(pubInbox)
-	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}").Methods("GET").HandlerFunc(pubUserActor)
+	relayer.Router.Path("/pub").Methods("POST").HandlerFunc(InboxHandler(postgres, s))
+	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}").Methods("GET").HandlerFunc(GetActorByNostrPubKeyHandler())
 	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/following").Methods("GET").HandlerFunc(pubUserFollowing)
 	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/followers").Methods("GET").HandlerFunc(pubUserFollowers)
 	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/outbox").Methods("GET").HandlerFunc(pubOutbox)
 	relayer.Router.Path("/pub/note/{id:[A-Fa-f0-9]{64}}").Methods("GET").HandlerFunc(pubNote)
 	relayer.Router.Path("/.well-known/webfinger").HandlerFunc(webfinger)
-	relayer.Router.Path("/.well-known/nostr.json").HandlerFunc(handleNip05)
+	relayer.Router.Path("/.well-known/nostr.json").HandlerFunc(Nip05Handler(s))
 
 	relayer.Router.PathPrefix("/").Methods("GET").Handler(http.FileServer(http.Dir("./static")))
 

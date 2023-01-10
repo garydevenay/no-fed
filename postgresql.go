@@ -9,6 +9,8 @@ import (
 type StorageProvider interface {
 	Setup() error
 	SetCacheDuration(duration time.Duration)
+	FollowNostrPubKey(pubActorUrl string, nostrPubkey string) error
+	SaveNote(nostrEventId string, pubNoteUrl string) error
 }
 
 type Database struct {
@@ -84,4 +86,24 @@ func (db *Database) SetCacheDuration(duration time.Duration) {
 			time.Sleep(1 * time.Minute)
 		}
 	}()
+}
+
+func (db *Database) FollowNostrPubKey(pubActorUrl string, nostrPubkey string) error {
+	_, err := db.conn.Exec(`
+		INSERT INTO followers (nostr_pubkey, pub_actor_url)
+		VALUES ($1, $2)
+		ON CONFLICT (nostr_pubkey, pub_actor_url) DO NOTHING`,
+		nostrPubkey, pubActorUrl)
+
+	return err
+}
+
+func (db *Database) SaveNote(nostrEventId string, pubNoteUrl string) error {
+	_, err := db.conn.Exec(`
+		INSERT INTO notes (nostr_event_id, pub_note_url)
+		VALUES ($1, $2)
+		ON CONFLICT (nostr_event_id) DO NOTHING`,
+		nostrEventId, pubNoteUrl)
+
+	return err
 }
