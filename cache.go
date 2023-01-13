@@ -4,114 +4,126 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/jmoiron/sqlx"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
 )
 
-func snotekey(id string) string      { return fmt.Sprintf("1:%s", id) }
-func anoteskey(pk, id string) string { return fmt.Sprintf("1:%s:%s", pk, id) }
-func metadatakey(pk string) string   { return fmt.Sprintf("0:%s", pk) }
-func contactskey(pk string) string   { return fmt.Sprintf("3:%s", pk) }
+type CacheProvider interface {
+	SetPurgeFrequency(duration time.Duration)
+	GetNoteByID(id string) (*nostr.Event, error)
+	GetNotesByPubKey(pubkey string) ([]nostr.Event, error)
+	GetMetadata(pubkey string) (*nostr.Event, error)
+	GetContactList(pubkey string) (*nostr.Event, error)
+	GetEventByKey(key string) (*nostr.Event, error)
+	CacheEvent(nostr.Event) error
+}
 
-func cacheEvent(evt nostr.Event) {
-	if evt.Kind != 0 && evt.Kind != 1 && evt.Kind != 3 {
-		log.Warn().Int("kind", evt.Kind).Msg("won't cache event")
-		return
+type PostgresCache struct {
+	conn *sqlx.DB
+}
+
+func NewPostgresCache(dbUrl string) CacheProvider {
+	conn, err := sqlx.Connect("postgres", dbUrl)
+	if err != nil {
+		panic(err)
 	}
 
-	j, _ := json.Marshal(evt)
+	return &PostgresCache{
+		conn,
+	}
+}
 
-	// notes
-	keys := []string{
-		snotekey(evt.ID),
-		anoteskey(evt.PubKey, evt.ID),
+// SetPurgeFrequency needs to be run as a goroutine to asynchronously clean out old cache items
+func (p *PostgresCache) SetPurgeFrequency(duration time.Duration) {
+	for {
+		time.Sleep(duration)
+		p.conn.Exec("DELETE FROM cache WHERE expiration < $1", time.Now())
+	}
+}
+
+func (p *PostgresCache) GetNoteByID(id string) (*nostr.Event, error) {
+	return p.GetEventByKey(fmt.Sprintf("1:%s", id))
+}
+
+func (p *PostgresCache) GetNotesByPubKey(pubkey string) ([]nostr.Event, error) {
+	var blobs []string
+	if err := p.conn.Select(&blobs, `
+		SELECT value FROM cache
+        WHERE key LIKE '1:' || $1 || '%'
+        ORDER BY time DESC
+        LIMIT 100`, fmt.Sprintf("1:%s:%%", pubkey)); err != nil {
+		return nil, err
 	}
 
-	// metadata and contact list
-	if evt.Kind == 0 || evt.Kind == 3 {
-		var k string
-		if evt.Kind == 0 {
-			k = metadatakey(evt.PubKey)
-		} else if evt.Kind == 3 {
-			k = contactskey(evt.PubKey)
+	var events []nostr.Event
+	for _, blob := range blobs {
+		var event nostr.Event
+		if err := json.Unmarshal([]byte(blob), &event); err != nil {
+			return nil, err
 		}
-
-		var order time.Time
-		pg.Get(&order, "SELECT time FROM cache WHERE key = $1", k)
-		if order.After(evt.CreatedAt) {
-			// already exists with a newer date
-			return
-		}
-
-		keys = []string{k}
+		events = append(events, event)
 	}
 
-	// save event (using multiple keys)
-	for _, k := range keys {
-		_, err := pg.Exec(`
+	return events, nil
+}
+
+func (p *PostgresCache) GetMetadata(pubkey string) (*nostr.Event, error) {
+	return p.GetEventByKey(fmt.Sprintf("0:%s", pubkey))
+}
+
+func (p *PostgresCache) GetContactList(pubkey string) (*nostr.Event, error) {
+	return p.GetEventByKey(fmt.Sprintf("3:%s", pubkey))
+}
+
+func (p *PostgresCache) GetEventByKey(key string) (*nostr.Event, error) {
+	var event nostr.Event
+	err := p.conn.Get(&event, "SELECT * FROM cache WHERE id = $1", key)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+
+	return &event, nil
+}
+
+func (p *PostgresCache) CacheEvent(event nostr.Event) error {
+	value, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	var keys []string
+	switch event.Kind {
+	case 0:
+		// metadata
+		keys = []string{
+			fmt.Sprintf("0:%s", event.PubKey),
+		}
+	case 1:
+		// note
+		keys = []string{
+			fmt.Sprintf("1:%s", event.ID),
+			fmt.Sprintf("1:%s:%s", event.PubKey, event.ID),
+		}
+	case 3:
+		// contact list
+		keys = []string{
+			fmt.Sprintf("3:%s", event.PubKey),
+		}
+	default:
+		return fmt.Errorf("unknown event kind: %d", event.Kind)
+	}
+
+	for _, key := range keys {
+		if _, err := p.conn.Exec(`
             INSERT INTO cache (key, value, time, expiration)
             VALUES ($1, $2, $3, now() + interval '10 days')
             ON CONFLICT (key) DO UPDATE SET expiration = EXCLUDED.expiration
-        `, k, j, evt.CreatedAt)
-		if err != nil {
-			log.Warn().Err(err).Interface("evt", evt).Msg("error caching")
+        `, key, value, event.CreatedAt); err != nil {
+			return err
 		}
 	}
+
+	return nil
 }
-
-func getCachedNote(id string) *nostr.Event {
-	var evt *nostr.Event
-	var j string
-	err := pg.Get(&j, "SELECT value FROM cache WHERE key = $1", snotekey(id))
-	if err != nil && err != sql.ErrNoRows {
-		log.Error().Err(err).Str("id", id).Msg("error getting cached note")
-	}
-	json.Unmarshal([]byte(j), evt)
-	return evt
-}
-
-func getCachedMetadata(pubkey string) *nostr.Event {
-	var evt *nostr.Event
-	var j string
-	err := pg.Get(&j, "SELECT value FROM cache WHERE key = $1", metadatakey(pubkey))
-	if err != nil && err != sql.ErrNoRows {
-		log.Error().Err(err).Str("pubkey", pubkey).Msg("error getting cached metadata")
-	}
-	json.Unmarshal([]byte(j), evt)
-	return evt
-}
-
-func getCachedContactList(pubkey string) *nostr.Event {
-	var evt *nostr.Event
-	var j string
-	err := pg.Get(&j, "SELECT value FROM cache WHERE key = $1", contactskey(pubkey))
-	if err != nil && err != sql.ErrNoRows {
-		log.Error().Err(err).Str("pubkey", pubkey).Msg("error getting cached contacts")
-	}
-	json.Unmarshal([]byte(j), evt)
-	return evt
-}
-
-func getNotesForPubkey(pubkey string) []nostr.Event {
-	var js []string
-	err := pg.Select(&js, `
-        SELECT value FROM cache
-        WHERE key LIKE '1:' || $1 || '%'
-        ORDER BY time DESC
-        LIMIT 100
-    `, pubkey)
-	if err != nil && err != sql.ErrNoRows {
-		log.Error().Err(err).Str("pubkey", pubkey).Msg("error getting cached notes")
-	}
-
-	evts := make([]nostr.Event, len(js))
-	for i, v := range js {
-		var evt nostr.Event
-		json.Unmarshal([]byte(v), &evt)
-		evts[i] = evt
-	}
-	return evts
-}
-
-// TODO: keep track of which user is in each relay

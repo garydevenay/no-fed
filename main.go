@@ -6,7 +6,6 @@ import (
 	"github.com/fiatjaf/relayer"
 	"github.com/jmoiron/sqlx"
 	"github.com/kelseyhightower/envconfig"
-	_ "github.com/lib/pq"
 	"github.com/rs/zerolog"
 	"net/http"
 	"os"
@@ -62,14 +61,17 @@ func main() {
 
 	// postgres connection
 	postgres := NewDatabase(s.PostgresURL)
-	err = postgres.Setup()
-	if err != nil {
+	if err := postgres.Setup(); err != nil {
 		log.Fatal().Err(err).Msg("couldn't connect to postgres")
 		return
 	}
 
-	// cache duration
-	postgres.SetCacheDuration(2 * time.Hour)
+	cacheService := NewPostgresCache(s.PostgresURL)
+	go cacheService.SetPurgeFrequency(2 * time.Hour)
+
+	nostrService := NewNostrService(postgres, cacheService, s)
+	nostrStorage := NewStorage(postgres)
+	relay := NewRelay(nostrStorage)
 
 	// define routes
 	relayer.Router.Path("/icon.svg").Methods("GET").HandlerFunc(
@@ -79,17 +81,19 @@ func main() {
 			return
 		})
 
-	relayer.Router.Path("/pub").Methods("POST").HandlerFunc(InboxHandler(postgres, s))
-	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}").Methods("GET").HandlerFunc(GetActorByNostrPubKeyHandler())
-	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/following").Methods("GET").HandlerFunc(pubUserFollowing)
-	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/followers").Methods("GET").HandlerFunc(pubUserFollowers)
-	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/outbox").Methods("GET").HandlerFunc(pubOutbox)
-	relayer.Router.Path("/pub/note/{id:[A-Fa-f0-9]{64}}").Methods("GET").HandlerFunc(pubNote)
-	relayer.Router.Path("/.well-known/webfinger").HandlerFunc(webfinger)
-	relayer.Router.Path("/.well-known/nostr.json").HandlerFunc(Nip05Handler(s))
+	handlers := InitializeHTTPHandlers(postgres, nostrService, s)
+
+	relayer.Router.HandleFunc("/pub", handlers.InboxHandler()).Methods("POST")
+	relayer.Router.HandleFunc("/pub/user/{pubkey:npub[0-9a-zA-Z]+}", handlers.UserByPubKeyHandler()).Methods("GET")
+	relayer.Router.HandleFunc("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/following", handlers.FollowingByPubKey()).Methods("GET")
+	relayer.Router.HandleFunc("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/followers", handlers.FollowersByPubKey()).Methods("GET")
+	relayer.Router.HandleFunc("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/outbox", handlers.OutboxHandler()).Methods("GET")
+	relayer.Router.HandleFunc("/pub/note/{id:[A-Fa-f0-9]{64}}", handlers.NoteByIDHandler()).Methods("GET")
+	relayer.Router.HandleFunc("/.well-known/webfinger", handlers.WebFingerHandler()).Methods("GET")
+	relayer.Router.HandleFunc("/.well-known/nostr.json", handlers.Nip05Handler()).Methods("GET")
 
 	relayer.Router.PathPrefix("/").Methods("GET").Handler(http.FileServer(http.Dir("./static")))
 
 	// start the relay/http server
-	relayer.Start(Relay{})
+	relayer.Start(relay)
 }

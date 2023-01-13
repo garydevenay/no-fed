@@ -13,6 +13,12 @@ type Relay struct {
 	storage Storage
 }
 
+func NewRelay(storage Storage) Relay {
+	return Relay{
+		storage: storage,
+	}
+}
+
 func (r Relay) Name() string {
 	return "no-fed"
 }
@@ -23,7 +29,7 @@ func (r Relay) Storage() relayer.Storage {
 
 func (r Relay) OnInitialized() {}
 
-func (relay Relay) Init() error {
+func (r Relay) Init() error {
 	filters := relayer.GetListeningFilters()
 	for _, filter := range filters {
 		log.Print(filter)
@@ -42,7 +48,15 @@ func (r Relay) AcceptEvent(evt *nostr.Event) bool {
 	return true
 }
 
-type Storage struct{}
+type Storage struct {
+	db StorageProvider
+}
+
+func NewStorage(db StorageProvider) Storage {
+	return Storage{
+		db,
+	}
+}
 
 func (s Storage) Init() error {
 	return nil
