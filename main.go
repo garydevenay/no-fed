@@ -84,7 +84,7 @@ func main() {
 	handlers := InitializeHTTPHandlers(postgres, nostrService, s)
 
 	relayer.Router.HandleFunc("/pub", handlers.InboxHandler()).Methods("POST")
-	relayer.Router.HandleFunc("/pub/user/{pubkey:npub[0-9a-zA-Z]+}", handlers.UserByPubKeyHandler()).Methods("GET")
+	relayer.Router.HandleFunc("/pub/user/{pubkey:[A-Fa-f0-9]{64}}", handlers.UserByPubKeyHandler()).Methods("GET")
 	relayer.Router.HandleFunc("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/following", handlers.FollowingByPubKey()).Methods("GET")
 	relayer.Router.HandleFunc("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/followers", handlers.FollowersByPubKey()).Methods("GET")
 	relayer.Router.HandleFunc("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/outbox", handlers.OutboxHandler()).Methods("GET")

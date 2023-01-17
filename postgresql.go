@@ -12,7 +12,7 @@ type StorageProvider interface {
 	FollowNostrPubKey(pubActorUrl string, nostrPubkey string) error
 	GetFollowersByPubKey(nostrPubkey string) ([]string, error)
 	SaveNote(nostrEventId string, pubNoteUrl string) error
-	SaveFollowers(events []nostr.Event, serviceUrl string) error
+	SaveFollowers(event nostr.Event, serviceUrl string) error
 	SaveNostrKeypair(nostrPubkey string, nostrPrivkey string, pubActorUrl string) error
 }
 
@@ -106,9 +106,10 @@ func (db *Database) SaveNote(nostrEventId string, pubNoteUrl string) error {
 	return err
 }
 
-func (db *Database) SaveFollowers(events []nostr.Event, serviceUrl string) error {
-	for _, event := range events {
-		actorUrl := fmt.Sprintf("%s@%s", event.PubKey, serviceUrl)
+func (db *Database) SaveFollowers(event nostr.Event, serviceUrl string) error {
+	followers := event.Tags.GetAll([]string{"p"})
+	for _, follower := range followers {
+		actorUrl := fmt.Sprintf("%s@%s", follower.Value(), serviceUrl)
 		if _, err := db.conn.Exec(`
 			INSERT INTO followers(nostr_pubkey, pub_actor_url)
 			VALUES ($1, $2)

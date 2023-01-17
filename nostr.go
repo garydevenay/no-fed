@@ -30,33 +30,49 @@ type NostrService struct {
 }
 
 func NewNostrService(db StorageProvider, cache CacheProvider, settings Settings) NostrProvider {
-	// TODO: This should be abstracted out into a config file
+	// TODO: It would probably be better to maintain a set of relays in the DB
+	// where we could track their health and remove them if they're down.
+	// We could also add new relays we are seeing when querying the network.
 	peers := []string{
 		"wss://nostr.zerofeerouting.com",
 		"wss://nostr.rocks",
 		"wss://nostr.semisol.dev",
 		"wss://nostr.shadownode.org",
 		"wss://nostr.sandwich.farm",
+		"wss://nostr.fmt.wiz.biz",
+		"wss://brb.io",
+		"wss://nostr.ono.re",
 		"wss://nostr-pub.wellorder.net",
-		//"wss://nostr-relay.freeberty.net",
-		//"wss://nostr.bitcoiner.social",
-		//"wss://nostr-relay.wlvs.space",
-		//"wss://nostr.onsats.org",
-		//"wss://nostr-relay.untethr.me",
-		//"wss://nostr.semisol.dev",
-		//"wss://nostr-pub.semisol.dev",
-		//"wss://nostr-verified.wellorder.net",
-		//"wss://nostr.drss.io",
-		//"wss://relay.damus.io",
-		//"wss://nostr.openchain.fr",
-		//"wss://nostr.delo.software",
-		//"wss://relay.nostr.info",
-		//"wss://relay.minds.com/nostr/v1/ws",
-		//"wss://nostr.oxtr.dev",
-		//"wss://nostr.ono.re",
-		//"wss://relay.grunch.dev",
-		//"wss://relay.cynsar.foundation",
-		//"wss://nostr.sandwich.farm",
+		"wss://nostr.nymsrelay.com",
+		"wss://nostr.delo.software",
+		"wss://nostr.oxtr.dev",
+		"wss://relay.stoner.com",
+		"wss://nostr-verified.wellorder.net",
+		"wss://nostr-pub.semisol.dev",
+		"wss://nostr.unknown.place",
+		"wss://nostr.bitcoiner.social",
+		"wss://nostr-relay.lnmarkets.com",
+		"wss://public.nostr.swissrouting.com",
+		"wss://nostr-2.zebedee.cloud",
+		"wss://relay.kronkltd.net",
+		"wss://relay.nostr.bg",
+		"wss://nostr.v0l.io",
+		"wss://nostr.zaprite.io",
+		"wss://nostr.drss.io",
+		"wss://nostr.coinos.io",
+		"wss://nostr.bongbong.com",
+		"wss://relay.minds.com/nostr/v1/ws",
+		"wss://nostr.zebedee.cloud",
+		"wss://relay.nostr.info",
+		"wss://nostr.walletofsatoshi.com",
+		"wss://satstacker.cloud",
+		"wss://nostr-relay.wlvs.space",
+		"wss://relay.damus.io",
+		"wss://relayer.fiatjaf.com",
+		"wss://expensive-relay.fiatjaf.com",
+		"wss://nostr.openchain.fr",
+		"wss://nostr.onsats.org",
+		"wss://rsslay.fiatjaf.com",
 	}
 
 	return &NostrService{
@@ -112,10 +128,15 @@ func (n *NostrService) GetNotesByPubKey(pubkey string) ([]nostr.Event, error) {
 		return nil, err
 	}
 
+	since := time.Date(1971, 1, 1, 0, 0, 0, 0, time.UTC)
+	if len(cached) > 0 {
+		since = cached[0].CreatedAt
+	}
+
 	filter := nostr.Filter{
 		Authors: []string{pubkey},
 		Kinds:   []int{1},
-		Since:   &cached[0].CreatedAt,
+		Since:   &since,
 	}
 
 	events := n.QuerySync(filter, 50)
@@ -134,17 +155,14 @@ func (n *NostrService) GetNotesByPubKey(pubkey string) ([]nostr.Event, error) {
 }
 
 func (n *NostrService) GetFollowersByPubKey(pubkey string) ([]string, error) {
-	//TODO: Check this filter
 	filter := nostr.Filter{
-		Tags: map[string][]string{
-			"p": {pubkey},
-		},
-		Kinds: []int{3},
+		Authors: []string{pubkey},
+		Kinds:   []int{3},
 	}
 
-	events := n.QuerySync(filter, 100)
+	events := n.QuerySync(filter, 1)
 	if len(events) > 0 {
-		if err := n.db.SaveFollowers(events, n.settings.ServiceURL); err != nil {
+		if err := n.db.SaveFollowers(events[0], n.settings.ServiceURL); err != nil {
 			return nil, err
 		}
 	}
@@ -168,14 +186,13 @@ func (n *NostrService) GetFollowingByPubKey(pubkey string) ([]string, error) {
 		if len(events) > 0 {
 			if err := n.cache.CacheEvent(events[0]); err != nil {
 				log.Warn().Err(err).Msg("couldn't cache event")
-				return nil, err
 			}
 
 			event = &events[0]
 		}
 	}
 
-	contacts := event.Tags.GetAll([]string{"p", ""})
+	contacts := event.Tags.GetAll([]string{"p"})
 	var following []string
 	for _, contact := range contacts {
 		following = append(following, contact.Value())
@@ -185,7 +202,7 @@ func (n *NostrService) GetFollowingByPubKey(pubkey string) ([]string, error) {
 }
 
 func (n *NostrService) GetMetadataByPubKey(pubkey string) (*nostr.Event, error) {
-	if event, err := n.cache.GetMetadata(pubkey); err == nil {
+	if event, err := n.cache.GetMetadata(pubkey); err == nil && event != nil {
 		return event, nil
 	}
 
@@ -210,31 +227,48 @@ func (n *NostrService) GetMetadataByPubKey(pubkey string) (*nostr.Event, error) 
 }
 
 func (n *NostrService) QuerySync(filter nostr.Filter, max int) []nostr.Event {
-	// CODEREVIEW: Could be worth thinking moving the caching in here, though I'm not sure if we want every query cached.
-	ctx := context.Background()
-	events := make(chan nostr.Event)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	events := make(chan nostr.Event, max*len(n.peers))
 	defer close(events)
 
+	var connectedRelays = make(map[string]*nostr.Relay)
+	var failedConnections = make(map[string]int)
 	rand.Seed(time.Now().Unix())
-	for i := 0; i < 4; i++ {
-		go func() {
-			relayUrl := n.peers[rand.Intn(len(n.peers))]
-			queryContext, cancel := context.WithTimeout(ctx, 4*time.Second)
-			defer cancel()
+	for len(connectedRelays) < 5 &&
+		(len(connectedRelays)+len(failedConnections)) < len(n.peers) &&
+		len(events) < max {
 
-			relay, err := nostr.RelayConnect(queryContext, relayUrl)
-			if err != nil {
-				log.Error().Err(err).Msg("Error connecting to relay")
-			}
-			fmt.Printf("Connected to relay %s\n", relayUrl)
-			defer relay.Close()
+		relayUrl := n.peers[rand.Intn(len(n.peers))]
+		if _, previousAttempt := failedConnections[relayUrl]; previousAttempt {
+			continue
+		}
 
-			for _, event := range relay.QuerySync(queryContext, filter) {
-				fmt.Printf("Found event: %s\n", event.ID)
-				events <- event
-			}
-		}()
+		if _, connected := connectedRelays[relayUrl]; connected {
+			continue
+		}
+
+		// Note: This was originally written to be concurrent, but it seems that the relay package may need some amends
+		queryContext, queryCancel := context.WithTimeout(ctx, 2*time.Second)
+
+		relay, err := nostr.RelayConnect(queryContext, relayUrl)
+		if err != nil {
+			failedConnections[relayUrl] = failedConnections[relayUrl] + 1
+			log.Error().Err(err).Msg("Error connecting to relay")
+			queryCancel()
+			continue
+		}
+		connectedRelays[relayUrl] = relay
+		fmt.Printf("Connected to relay %s\n", relayUrl)
+
+		for _, event := range relay.QuerySync(queryContext, filter) {
+			fmt.Printf("Found event: %s\n", event.ID)
+			events <- event
+		}
+		_ = relay.Close()
+		queryCancel()
 	}
+	defer cancel()
 
 	var unique = map[string]bool{}
 	var filteredEvents []nostr.Event
@@ -250,7 +284,7 @@ func (n *NostrService) QuerySync(filter nostr.Filter, max int) []nostr.Event {
 				unique[event.ID] = true
 				filteredEvents = append(filteredEvents, event)
 			}
-		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
 			break
 		}
 	}

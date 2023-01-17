@@ -78,9 +78,18 @@ func (p *PostgresCache) GetContactList(pubkey string) (*nostr.Event, error) {
 }
 
 func (p *PostgresCache) GetEventByKey(key string) (*nostr.Event, error) {
-	var event nostr.Event
-	err := p.conn.Get(&event, "SELECT * FROM cache WHERE id = $1", key)
+	var value string
+	err := p.conn.Get(&value, "SELECT value FROM cache WHERE key = $1", key)
 	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+
+	if value == "" {
+		return nil, nil
+	}
+
+	var event nostr.Event
+	if err := json.Unmarshal([]byte(value), &event); err != nil {
 		return nil, err
 	}
 
