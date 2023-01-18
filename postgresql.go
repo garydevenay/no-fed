@@ -9,11 +9,14 @@ import (
 
 type StorageProvider interface {
 	Setup() error
+	GetPubKeyByActorUrl(actorUrl string) (string, error)
 	FollowNostrPubKey(pubActorUrl string, nostrPubkey string) error
+	UnfollowNostrPubKey(pubActorUrl string, nostrPubkey string) error
 	GetFollowersByPubKey(nostrPubkey string) ([]string, error)
 	GetNoteURLByEventID(eventID string) (string, error)
 	GetActorURLByPubKey(pubkey string) (string, error)
 	SaveNote(nostrEventId string, pubNoteUrl string) error
+	DeleteNoteByUrl(pubNoteUrl string) error
 	SaveFollowers(event nostr.Event, serviceUrl string) error
 	SaveNostrKeypair(nostrPubkey string, nostrPrivkey string, pubActorUrl string) error
 }
@@ -74,6 +77,13 @@ func (db *Database) Setup() error {
 	return err
 }
 
+func (db *Database) GetPubKeyByActorUrl(actorUrl string) (string, error) {
+	var pubkey string
+	err := db.conn.Get(&pubkey, "SELECT nostr_pubkey FROM keys WHERE pub_actor_url = $1", actorUrl)
+
+	return pubkey, err
+}
+
 func (db *Database) FollowNostrPubKey(pubActorUrl string, nostrPubkey string) error {
 	//TODO: If this is coming from AP, I imagine we need to split the pubActorUrl up
 	_, err := db.conn.Exec(`
@@ -81,6 +91,12 @@ func (db *Database) FollowNostrPubKey(pubActorUrl string, nostrPubkey string) er
 		VALUES ($1, $2)
 		ON CONFLICT (nostr_pubkey, pub_actor_url) DO NOTHING`,
 		nostrPubkey, pubActorUrl)
+
+	return err
+}
+
+func (db *Database) UnfollowNostrPubKey(pubActorUrl string, nostrPubkey string) error {
+	_, err := db.conn.Exec("DELETE FROM followers WHERE nostr_pubkey = $1 AND pub_actor_url = $2", nostrPubkey, pubActorUrl)
 
 	return err
 }
@@ -122,6 +138,21 @@ func (db *Database) SaveNote(nostrEventId string, pubNoteUrl string) error {
 		VALUES ($1, $2)
 		ON CONFLICT (nostr_event_id) DO NOTHING`,
 		nostrEventId, pubNoteUrl)
+
+	return err
+}
+
+func (db *Database) DeleteNoteByUrl(pubNoteUrl string) error {
+	var noteID string
+	if err := db.conn.Get(&noteID, "SELECT nostr_event_id FROM notes WHERE pub_note_url = $1", pubNoteUrl); err != nil {
+		return err
+	}
+
+	if _, err := db.conn.Exec("DELETE FROM notes WHERE pub_note_url = $1", pubNoteUrl); err != nil {
+		return err
+	}
+
+	_, err := db.conn.Exec("DELETE FROM cache WHERE key = $1", fmt.Sprintf("1:%s", noteID))
 
 	return err
 }

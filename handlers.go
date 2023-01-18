@@ -6,7 +6,6 @@ import (
 	"github.com/fiatjaf/litepub"
 	"github.com/gorilla/mux"
 	"github.com/nbd-wtf/go-nostr/nip05"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -42,79 +41,97 @@ func (h *Handler) InboxHandler() HandlerResponse {
 		}
 
 		switch base.Type {
-		case "Note":
-			var note litepub.Note
-			if err := decoder.Decode(&note); err != nil {
-				http.Error(w, "bad request", 400)
-				return
-			}
-
-			if err := h.db.SaveNote("", ""); err != nil {
-				http.Error(w, "failed to save note", 500)
-				return
-			}
-
-			break
+		case "Create":
 		case "Follow":
-			var follow litepub.Follow
-			if err := decoder.Decode(&follow); err != nil {
+			var create litepub.Create[litepub.Base]
+			if err := decoder.Decode(&create); err != nil {
 				http.Error(w, "bad request", 400)
+				log.Error().Err(err).Msg("failed to decode request body to create type")
 				return
 			}
 
-			objectParts := strings.Split(follow.Object, "/")
-			nostrPubKey := objectParts[len(objectParts)-1]
+			switch create.Object.Type {
+			case "Note":
+				var note litepub.Create[litepub.Note]
+				if err := decoder.Decode(&note); err != nil {
+					http.Error(w, "bad request", 400)
+					log.Error().Err(err).Msg("failed to decode request body to note type")
+					return
+				}
 
-			if err := h.db.FollowNostrPubKey(follow.Actor, nostrPubKey); err != nil {
-				log.Warn().Err(err).Str("actor", follow.Actor).Str("object", follow.Object).
-					Msg("error saving Follow")
-				http.Error(w, "failed to accept Follow", 500)
-				return
+				_ = nostrEventFromPubNote(&note.Object)
+				
+				break
+			case "Person":
+				var follow litepub.Create[litepub.Follow]
+				if err := decoder.Decode(&follow); err != nil {
+					http.Error(w, "bad request", 400)
+					log.Error().Err(err).Msg("failed to decode request body to follow type")
+					return
+				}
+
+				objectParts := strings.Split(follow.Object.Object, "/")
+				nostrPubKey := objectParts[len(objectParts)-1]
+
+				if err := h.db.FollowNostrPubKey(follow.Object.Actor, nostrPubKey); err != nil {
+					http.Error(w, "failed to follow user", 500)
+					log.Error().Err(err).Msg("failed to follow user")
+					return
+				}
+				break
+			default:
+				log.Warn().Msg(fmt.Sprintf("unsupported object type: %s", create.Object.Type))
+				break
 			}
-
-			actor, err := litepub.FetchActor(follow.Actor)
-			if err != nil || actor.Inbox == "" {
-				log.Error().Err(err).Str("actor", actor.Id).Msg("Failed to find an inbox for the requested actor.")
-				http.Error(w, "Invalid follow request", 400)
-				return
-			}
-
-			//CODEREVIEW: Abstract AP interactions out to their own type to inject in?
-			acceptRequest := litepub.Accept{
-				Base: litepub.Base{
-					Type: "Accept",
-					Id:   fmt.Sprintf("%v/pub/accept/%v", h.settings.ServiceURL, nostrPubKey),
-				},
-				Object: follow.Object,
-			}
-
-			resp, err := litepub.SendSigned(
-				h.settings.PrivateKey,
-				fmt.Sprintf("%v/pub/user/%v#main-key", h.settings.ServiceURL, nostrPubKey),
-				actor.Inbox,
-				acceptRequest,
-			)
-
-			if err != nil {
-				b, _ := io.ReadAll(resp.Body)
-				log.Warn().Err(err).Str("body", string(b)).
-					Msg("failed to send Accept")
-				http.Error(w, "failed to send Accept", 503)
-				return
-			}
-
-			//TODO: What is our response format?
-
-			break
-		case "Undo":
-			//TODO: How do we undo things without knowing what they are from base?
 
 			break
 		case "Delete":
-			//TODO: What can we delete and how do we do it?
+			var del litepub.Create[string]
+			if err := decoder.Decode(&del); err != nil {
+				http.Error(w, "bad request", 400)
+				log.Error().Err(err).Msg("failed to decode request body to delete type")
+				return
+			}
+
+			if err := h.db.DeleteNoteByUrl(del.Object); err != nil {
+				http.Error(w, "failed to delete note", 500)
+				log.Error().Err(err).Msg("failed to delete note")
+				return
+			}
 
 			break
+		case "Undo":
+			var undo litepub.Create[litepub.Base]
+			if err := decoder.Decode(&undo); err != nil {
+				http.Error(w, "bad request", 400)
+				log.Error().Err(err).Msg("failed to decode request body to create type")
+				return
+			}
+
+			switch undo.Object.Type {
+			case "Follow":
+				var follow litepub.Create[litepub.Follow]
+				if err := decoder.Decode(&follow); err != nil {
+					http.Error(w, "bad request", 400)
+					log.Error().Err(err).Msg("failed to decode request body to undo follow type")
+					return
+				}
+
+				objectParts := strings.Split(follow.Object.Object, "/")
+				nostrPubKey := objectParts[len(objectParts)-1]
+
+				if err := h.db.UnfollowNostrPubKey(follow.Object.Actor, nostrPubKey); err != nil {
+					http.Error(w, "failed to unfollow user", 500)
+					log.Error().Err(err).Msg("failed to unfollow user")
+					return
+				}
+
+				break
+			default:
+				break
+			}
 		default:
+			break
 		}
 
 		w.WriteHeader(200)
@@ -124,7 +141,6 @@ func (h *Handler) InboxHandler() HandlerResponse {
 // UserByPubKeyHandler returns the user details for a given pubkey.
 func (h *Handler) UserByPubKeyHandler() HandlerResponse {
 	return func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("Hit UserByPubKeyHandler")
 		nostrPubKey := mux.Vars(r)["pubkey"]
 		metadata, err := h.nostr.GetMetadataByPubKey(nostrPubKey)
 		if err != nil {

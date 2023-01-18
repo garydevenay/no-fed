@@ -18,6 +18,7 @@ type CacheProvider interface {
 	GetContactList(pubkey string) (*nostr.Event, error)
 	GetEventByKey(key string) (*nostr.Event, error)
 	CacheEvent(nostr.Event) error
+	ClearCacheByKey(key string) error
 }
 
 type PostgresCache struct {
@@ -135,4 +136,9 @@ func (p *PostgresCache) CacheEvent(event nostr.Event) error {
 	}
 
 	return nil
+}
+
+func (p *PostgresCache) ClearCacheByKey(key string) error {
+	_, err := p.conn.Exec("DELETE FROM cache WHERE key = $1", fmt.Sprintf("1:%s", key))
+	return err
 }
