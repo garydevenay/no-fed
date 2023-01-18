@@ -60,7 +60,7 @@ func (h *Handler) InboxHandler() HandlerResponse {
 				}
 
 				_ = nostrEventFromPubNote(&note.Object)
-				
+
 				break
 			case "Person":
 				var follow litepub.Create[litepub.Follow]
@@ -109,7 +109,7 @@ func (h *Handler) InboxHandler() HandlerResponse {
 			}
 
 			switch undo.Object.Type {
-			case "Follow":
+			case "Person":
 				var follow litepub.Create[litepub.Follow]
 				if err := decoder.Decode(&follow); err != nil {
 					http.Error(w, "bad request", 400)
