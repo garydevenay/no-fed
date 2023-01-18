@@ -71,8 +71,8 @@ func (s Storage) QueryEvents(filter *nostr.Filter) (events []nostr.Event, err er
 	// search activitypub servers for these specific notes
 	if len(filter.IDs) > 0 {
 		for _, id := range filter.IDs {
-			var noteUrl string
-			if err := pg.Get(&noteUrl, "SELECT pub_note_url FROM notes WHERE nostr_event_id = $1", id); err != nil {
+			noteUrl, err := s.db.GetNoteURLByEventID(id)
+			if err != nil {
 				continue
 			}
 
@@ -89,8 +89,8 @@ func (s Storage) QueryEvents(filter *nostr.Filter) (events []nostr.Event, err er
 
 	// search activitypub servers for stuff from these authors
 	for _, pubkey := range filter.Authors {
-		var actorUrl string
-		if err := pg.Get(&actorUrl, "SELECT pub_actor_url FROM keys WHERE pubkey = $1", pubkey); err != nil {
+		actorUrl, err := s.db.GetActorURLByPubKey(pubkey)
+		if err != nil {
 			continue
 		}
 
@@ -122,12 +122,14 @@ func (s Storage) QueryEvents(filter *nostr.Filter) (events []nostr.Event, err er
 
 	// search activity pub for replies to a note
 	for _, id := range filter.Tags["e"] {
-		var url string
-		if err := pg.Get(&url, "SELECT pub_note_url FROM notes WHERE nostr_event_id  = $1", id); err == nil {
-			if note, err := litepub.FetchNote(url); err == nil {
-				evt := nostrEventFromPubNote(note)
-				events = append(events, evt)
-			}
+		noteUrl, err := s.db.GetNoteURLByEventID(id)
+		if err != nil {
+			continue
+		}
+
+		if note, err := litepub.FetchNote(noteUrl); err == nil {
+			evt := nostrEventFromPubNote(note)
+			events = append(events, evt)
 		}
 	}
 

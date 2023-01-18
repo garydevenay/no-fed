@@ -11,6 +11,8 @@ type StorageProvider interface {
 	Setup() error
 	FollowNostrPubKey(pubActorUrl string, nostrPubkey string) error
 	GetFollowersByPubKey(nostrPubkey string) ([]string, error)
+	GetNoteURLByEventID(eventID string) (string, error)
+	GetActorURLByPubKey(pubkey string) (string, error)
 	SaveNote(nostrEventId string, pubNoteUrl string) error
 	SaveFollowers(event nostr.Event, serviceUrl string) error
 	SaveNostrKeypair(nostrPubkey string, nostrPrivkey string, pubActorUrl string) error
@@ -94,6 +96,24 @@ func (db *Database) GetFollowersByPubKey(nostrPubkey string) ([]string, error) {
 	}
 
 	return followers, nil
+}
+
+func (db *Database) GetNoteURLByEventID(eventID string) (string, error) {
+	var noteUrl string
+	if err := db.conn.Get(&noteUrl, "SELECT pub_note_url FROM notes WHERE nostr_event_id = $1", eventID); err != nil {
+		return "", err
+	}
+
+	return noteUrl, nil
+}
+
+func (db *Database) GetActorURLByPubKey(pubkey string) (string, error) {
+	var actorUrl string
+	if err := db.conn.Get(&actorUrl, "SELECT pub_actor_url FROM keys WHERE nostr_pubkey = $1", pubkey); err != nil {
+		return "", err
+	}
+
+	return actorUrl, nil
 }
 
 func (db *Database) SaveNote(nostrEventId string, pubNoteUrl string) error {

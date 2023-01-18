@@ -30,6 +30,7 @@ func InitializeHTTPHandlers(db StorageProvider, nostr NostrProvider, settings Se
 // InboxHandler deals with any incoming ActivityPub to an Inbox and handles them accordingly.
 // This handler will deal with any submissions coming in from the AP side of things.
 // From here we can process any incoming data, store what we need and send anything onwards to our outbox.
+// HTTP: /pub
 func (h *Handler) InboxHandler() HandlerResponse {
 	return func(w http.ResponseWriter, r *http.Request) {
 		decoder := json.NewDecoder(r.Body)

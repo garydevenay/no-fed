@@ -272,20 +272,17 @@ func (n *NostrService) QuerySync(filter nostr.Filter, max int) []nostr.Event {
 
 	var unique = map[string]bool{}
 	var filteredEvents []nostr.Event
-	for {
-		if len(filteredEvents) == max {
-			break
-		}
-
+	for len(filteredEvents) < max {
 		select {
+		case <-ctx.Done():
+			close(events)
+			break
 		case event := <-events:
 			fmt.Printf("Received event: %s\n", event.ID)
 			if _, ok := unique[event.ID]; !ok {
 				unique[event.ID] = true
 				filteredEvents = append(filteredEvents, event)
 			}
-		case <-ctx.Done():
-			break
 		}
 	}
 
