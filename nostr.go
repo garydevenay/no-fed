@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/fiatjaf/litepub"
+	"github.com/nbd-wtf/go-nostr/nip10"
 	"math/rand"
 	"time"
 
@@ -20,6 +22,9 @@ type NostrProvider interface {
 	GetFollowingByPubKey(pubkey string) ([]string, error)
 	GetMetadataByPubKey(pubkey string) (*nostr.Event, error)
 	QuerySync(filter nostr.Filter, max int) []nostr.Event
+
+	EventToNote(event nostr.Event) litepub.Note
+	EventToActor(event nostr.Event) litepub.Actor
 }
 
 type NostrService struct {
@@ -91,7 +96,7 @@ func (n *NostrService) GetNostrKeysByActor(actor string) (string, string, error)
 		return "", "", err
 	}
 
-	if err := n.db.SaveNostrKeypair(pubkey, privkey, actor); err != nil {
+	if err = n.db.SaveNostrKeypair(pubkey, privkey, actor); err != nil {
 		return "", "", err
 	}
 
@@ -287,4 +292,60 @@ func (n *NostrService) QuerySync(filter nostr.Filter, max int) []nostr.Event {
 	}
 
 	return filteredEvents
+}
+
+func (n *NostrService) EventToNote(event nostr.Event) litepub.Note {
+	pTags := event.Tags.GetAll([]string{"p", ""})
+	cc := make([]string, len(pTags))
+	for i, tag := range pTags {
+		cc[i] = s.ServiceURL + "/pub/user/" + tag.Value()
+	}
+
+	inReplyTo := ""
+	if replyTag := nip10.GetImmediateReply(event.Tags); replyTag != nil {
+		inReplyTo = s.ServiceURL + "/pub/note/" + replyTag.Value()
+	}
+
+	return litepub.Note{
+		Base: litepub.Base{
+			Id:   s.ServiceURL + "/pub/note/" + event.ID,
+			Type: "Note",
+		},
+		Published:    event.CreatedAt,
+		AttributedTo: s.ServiceURL + "/pub/user/" + event.PubKey,
+		Content:      event.Content,
+		InReplyTo:    inReplyTo,
+		To:           []string{"https://www.w3.org/ns/activitystreams#Public"},
+		CC:           cc,
+	}
+}
+
+func (n *NostrService) EventToActor(event nostr.Event) litepub.Actor {
+	metadata, _ := nostr.ParseMetadata(event)
+
+	return litepub.Actor{
+		Base: litepub.Base{
+			Id:   s.ServiceURL + "/pub/user/" + event.PubKey,
+			Type: "Person",
+		},
+		URL:                       s.ServiceURL + "/" + event.PubKey,
+		ManuallyApprovesFollowers: false,
+		Published:                 event.CreatedAt,
+		Followers:                 s.ServiceURL + "/pub/user/" + event.PubKey + "/followers",
+		Following:                 s.ServiceURL + "/pub/user/" + event.PubKey + "/following",
+		Inbox:                     s.ServiceURL + "/pub",
+		Outbox:                    s.ServiceURL + "/pub/user/" + event.PubKey + "/outbox",
+		PreferredUsername:         event.PubKey,
+		Name:                      metadata.Name,
+		Summary:                   metadata.About,
+		Icon: litepub.ActorImage{
+			Type: "Image",
+			URL:  metadata.Picture,
+		},
+		PublicKey: litepub.PublicKey{
+			Id:           s.ServiceURL + "/pub/user/" + event.PubKey + "#main-key",
+			Owner:        s.ServiceURL + "/pub/user/" + event.PubKey,
+			PublicKeyPEM: s.PublicKeyPEM,
+		},
+	}
 }

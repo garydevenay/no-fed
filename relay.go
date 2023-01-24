@@ -49,12 +49,17 @@ func (r Relay) AcceptEvent(evt *nostr.Event) bool {
 }
 
 type Storage struct {
-	db StorageProvider
+	db          StorageProvider
+	activitypub ActivityPubProvider
 }
 
-func NewStorage(db StorageProvider) Storage {
+func NewStorage(db StorageProvider, activitypub ActivityPubProvider) Storage {
+	//CODEREVIEW: activitypub should never have to be injected into storage, as they should have no direct interaction
+	//with each other. Ideally we would inject an ActivityPubProvider into the Relay, which would implement QueryEvents,
+	//but the external dependency requires that Storage implement QueryEvents.
 	return Storage{
 		db,
+		activitypub,
 	}
 }
 
@@ -80,8 +85,8 @@ func (s Storage) QueryEvents(filter *nostr.Filter) (events []nostr.Event, err er
 			if err != nil {
 				continue
 			}
-			evt := nostrEventFromPubNote(note)
-			events = append(events, evt)
+			event, _ := s.activitypub.NoteToEvent(note)
+			events = append(events, *event)
 		}
 
 		return events, nil
@@ -101,7 +106,8 @@ func (s Storage) QueryEvents(filter *nostr.Filter) (events []nostr.Event, err er
 
 		if slices.Contains(filter.Kinds, 0) {
 			// return actor metadata
-			events = append(events, nostrEventFromActorMetadata(actor))
+			event, _ := s.activitypub.ActorToEvent(actor)
+			events = append(events, *event)
 		}
 
 		if slices.Contains(filter.Kinds, 1) {
@@ -109,14 +115,16 @@ func (s Storage) QueryEvents(filter *nostr.Filter) (events []nostr.Event, err er
 			notes, err := litepub.FetchNotes(actor.Outbox)
 			if err == nil {
 				for _, note := range notes {
-					events = append(events, nostrEventFromPubNote(&note))
+					event, _ := s.activitypub.NoteToEvent(&note)
+					events = append(events, *event)
 				}
 			}
 		}
 
 		if slices.Contains(filter.Kinds, 3) {
 			// return actor follows
-			events = append(events, nostrEventFromActorFollows(actor))
+			event, _ := s.activitypub.ActorFollowsToEvent(actor)
+			events = append(events, *event)
 		}
 	}
 
@@ -128,8 +136,8 @@ func (s Storage) QueryEvents(filter *nostr.Filter) (events []nostr.Event, err er
 		}
 
 		if note, err := litepub.FetchNote(noteUrl); err == nil {
-			evt := nostrEventFromPubNote(note)
-			events = append(events, evt)
+			event, _ := s.activitypub.NoteToEvent(note)
+			events = append(events, *event)
 		}
 	}
 

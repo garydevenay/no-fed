@@ -70,7 +70,9 @@ func main() {
 	go cacheService.SetPurgeFrequency(2 * time.Hour)
 
 	nostrService := NewNostrService(postgres, cacheService, s)
-	nostrStorage := NewStorage(postgres)
+	activityPubService := NewActivityPub(postgres, nostrService, s)
+
+	nostrStorage := NewStorage(postgres, activityPubService)
 	relay := NewRelay(nostrStorage)
 
 	// define routes
@@ -81,7 +83,7 @@ func main() {
 			return
 		})
 
-	handlers := InitializeHTTPHandlers(postgres, nostrService, s)
+	handlers := InitializeHTTPHandlers(postgres, nostrService, activityPubService, s)
 
 	relayer.Router.HandleFunc("/pub", handlers.InboxHandler()).Methods("POST")
 	relayer.Router.HandleFunc("/pub/user/{pubkey:[A-Fa-f0-9]{64}}", handlers.UserByPubKeyHandler()).Methods("GET")

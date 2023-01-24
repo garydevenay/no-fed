@@ -1,11 +1,13 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/fiatjaf/litepub"
 	"github.com/gorilla/mux"
 	"github.com/nbd-wtf/go-nostr/nip05"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -13,16 +15,18 @@ import (
 type HandlerResponse func(w http.ResponseWriter, r *http.Request)
 
 type Handler struct {
-	db       StorageProvider
-	nostr    NostrProvider
-	settings Settings
+	db          StorageProvider
+	nostr       NostrProvider
+	activitypub ActivityPubProvider
+	settings    Settings
 }
 
-func InitializeHTTPHandlers(db StorageProvider, nostr NostrProvider, settings Settings) Handler {
+func InitializeHTTPHandlers(db StorageProvider, nostr NostrProvider, activitypub ActivityPubProvider, settings Settings) Handler {
 	return Handler{
-		db:       db,
-		nostr:    nostr,
-		settings: settings,
+		db:          db,
+		nostr:       nostr,
+		activitypub: activitypub,
+		settings:    settings,
 	}
 }
 
@@ -32,48 +36,65 @@ func InitializeHTTPHandlers(db StorageProvider, nostr NostrProvider, settings Se
 // HTTP: /pub
 func (h *Handler) InboxHandler() HandlerResponse {
 	return func(w http.ResponseWriter, r *http.Request) {
-		decoder := json.NewDecoder(r.Body)
+		body, _ := io.ReadAll(r.Body)
 		var base litepub.Base
-		if err := decoder.Decode(&base); err != nil {
+		if err := json.Unmarshal(body, &base); err != nil {
 			http.Error(w, "bad request", 400)
 			log.Error().Err(err).Msg("failed to decode request body to base type")
 			return
 		}
 
 		switch base.Type {
-		case "Create":
-		case "Follow":
+		case "Create", "Follow":
 			var create litepub.Create[litepub.Base]
-			if err := decoder.Decode(&create); err != nil {
+			if err := json.Unmarshal(body, &create); err != nil {
 				http.Error(w, "bad request", 400)
 				log.Error().Err(err).Msg("failed to decode request body to create type")
 				return
 			}
 
+			if key, err := h.db.GetPubKeyByActorUrl(create.Actor); err == nil && err != sql.ErrNoRows {
+				if key == "" {
+					_, _, err = h.nostr.GetNostrKeysByActor(create.Actor)
+					if err != nil {
+						http.Error(w, "bad request", 400)
+						log.Error().Err(err).Msg("failed to get nostr keys by actor")
+						return
+					}
+				}
+			} else {
+				log.Error().Err(err).Msg("failed to get pubkey by actor url")
+			}
+
 			switch create.Object.Type {
 			case "Note":
 				var note litepub.Create[litepub.Note]
-				if err := decoder.Decode(&note); err != nil {
+				if err := json.Unmarshal(body, &note); err != nil {
 					http.Error(w, "bad request", 400)
 					log.Error().Err(err).Msg("failed to decode request body to note type")
 					return
 				}
 
-				_ = nostrEventFromPubNote(&note.Object)
+				_, err := h.activitypub.NoteToEvent(&note.Object)
+				if err != nil {
+					http.Error(w, "bad request", 400)
+					log.Error().Err(err).Msg("failed to convert note to event")
+					return
+				}
 
 				break
 			case "Person":
-				var follow litepub.Create[litepub.Follow]
-				if err := decoder.Decode(&follow); err != nil {
+				var follow litepub.Follow
+				if err := json.Unmarshal(body, &follow); err != nil {
 					http.Error(w, "bad request", 400)
 					log.Error().Err(err).Msg("failed to decode request body to follow type")
 					return
 				}
 
-				objectParts := strings.Split(follow.Object.Object, "/")
+				objectParts := strings.Split(follow.Object, "/")
 				nostrPubKey := objectParts[len(objectParts)-1]
 
-				if err := h.db.FollowNostrPubKey(follow.Object.Actor, nostrPubKey); err != nil {
+				if err := h.db.FollowNostrPubKey(follow.Actor, nostrPubKey); err != nil {
 					http.Error(w, "failed to follow user", 500)
 					log.Error().Err(err).Msg("failed to follow user")
 					return
@@ -87,7 +108,7 @@ func (h *Handler) InboxHandler() HandlerResponse {
 			break
 		case "Delete":
 			var del litepub.Create[string]
-			if err := decoder.Decode(&del); err != nil {
+			if err := json.Unmarshal(body, &del); err != nil {
 				http.Error(w, "bad request", 400)
 				log.Error().Err(err).Msg("failed to decode request body to delete type")
 				return
@@ -102,7 +123,7 @@ func (h *Handler) InboxHandler() HandlerResponse {
 			break
 		case "Undo":
 			var undo litepub.Create[litepub.Base]
-			if err := decoder.Decode(&undo); err != nil {
+			if err := json.Unmarshal(body, &undo); err != nil {
 				http.Error(w, "bad request", 400)
 				log.Error().Err(err).Msg("failed to decode request body to create type")
 				return
@@ -111,7 +132,7 @@ func (h *Handler) InboxHandler() HandlerResponse {
 			switch undo.Object.Type {
 			case "Person":
 				var follow litepub.Create[litepub.Follow]
-				if err := decoder.Decode(&follow); err != nil {
+				if err := json.Unmarshal(body, &follow); err != nil {
 					http.Error(w, "bad request", 400)
 					log.Error().Err(err).Msg("failed to decode request body to undo follow type")
 					return
@@ -148,7 +169,7 @@ func (h *Handler) UserByPubKeyHandler() HandlerResponse {
 			return
 		}
 
-		actor := pubActorFromNostrEvent(*metadata)
+		actor := h.nostr.EventToActor(*metadata)
 		w.Header().Set("Content-Type", "application/activity+json")
 		err = json.NewEncoder(w).Encode(actor)
 
@@ -169,7 +190,7 @@ func (h *Handler) NoteByIDHandler() HandlerResponse {
 			return
 		}
 
-		note := pubNoteFromNostrEvent(*event)
+		note := h.nostr.EventToNote(*event)
 		w.Header().Set("Content-Type", "application/activity+json")
 		_ = json.NewEncoder(w).Encode(note)
 	}
@@ -277,7 +298,7 @@ func (h *Handler) OutboxHandler() HandlerResponse {
 
 		var creates []litepub.Create[litepub.Note]
 		for _, event := range events {
-			note := pubNoteFromNostrEvent(event)
+			note := h.nostr.EventToNote(event)
 			wrapped := litepub.WrapCreate(note, fmt.Sprintf("%s/pub/create/%s", s.ServiceURL, event.ID))
 			creates = append(creates, wrapped)
 		}
@@ -337,7 +358,13 @@ func (h *Handler) Nip05Handler() HandlerResponse {
 			}
 		}
 
-		_, pubkey := nostrKeysForPubActor(actor)
+		_, pubkey, err := h.nostr.GetNostrKeysByActor(actor)
+		if err != nil {
+			log.Debug().Err(err).Str("actor", actorUrl).Msg("failed to fetch nostr keys")
+			http.Error(w, "failed to encode response", 500)
+			return
+		}
+
 		response.Names[name] = pubkey
 		response.Relays[pubkey] = []string{h.settings.RelayURL}
 

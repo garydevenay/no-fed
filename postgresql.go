@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
@@ -14,6 +15,7 @@ type StorageProvider interface {
 	UnfollowNostrPubKey(pubActorUrl string, nostrPubkey string) error
 	GetFollowersByPubKey(nostrPubkey string) ([]string, error)
 	GetNoteURLByEventID(eventID string) (string, error)
+	GetEventIDByNoteURL(noteUrl string) (string, error)
 	GetActorURLByPubKey(pubkey string) (string, error)
 	SaveNote(nostrEventId string, pubNoteUrl string) error
 	DeleteNoteByUrl(pubNoteUrl string) error
@@ -72,20 +74,20 @@ func (db *Database) Setup() error {
 		CREATE INDEX IF NOT EXISTS cachedeventorder ON cache (time);
 		`)
 
-	//TODO: map of actual nostr pubkeys to relays and of nostr event ids to relays
-
 	return err
 }
 
 func (db *Database) GetPubKeyByActorUrl(actorUrl string) (string, error) {
 	var pubkey string
 	err := db.conn.Get(&pubkey, "SELECT nostr_pubkey FROM keys WHERE pub_actor_url = $1", actorUrl)
+	if err == sql.ErrNoRows {
+		err = nil
+	}
 
 	return pubkey, err
 }
 
 func (db *Database) FollowNostrPubKey(pubActorUrl string, nostrPubkey string) error {
-	//TODO: If this is coming from AP, I imagine we need to split the pubActorUrl up
 	_, err := db.conn.Exec(`
 		INSERT INTO followers (nostr_pubkey, pub_actor_url)
 		VALUES ($1, $2)
@@ -107,7 +109,7 @@ func (db *Database) GetFollowersByPubKey(nostrPubkey string) ([]string, error) {
 		SELECT pub_actor_url 
 		FROM followers 
 		WHERE nostr_pubkey = $1`,
-		nostrPubkey); err != nil {
+		nostrPubkey); err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
 
@@ -116,16 +118,25 @@ func (db *Database) GetFollowersByPubKey(nostrPubkey string) ([]string, error) {
 
 func (db *Database) GetNoteURLByEventID(eventID string) (string, error) {
 	var noteUrl string
-	if err := db.conn.Get(&noteUrl, "SELECT pub_note_url FROM notes WHERE nostr_event_id = $1", eventID); err != nil {
+	if err := db.conn.Get(&noteUrl, "SELECT pub_note_url FROM notes WHERE nostr_event_id = $1", eventID); err != nil && err != sql.ErrNoRows {
 		return "", err
 	}
 
 	return noteUrl, nil
 }
 
+func (db *Database) GetEventIDByNoteURL(noteUrl string) (string, error) {
+	var eventID string
+	if err := db.conn.Get(&eventID, "SELECT nostr_event_id FROM notes WHERE pub_note_url = $1", noteUrl); err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+
+	return eventID, nil
+}
+
 func (db *Database) GetActorURLByPubKey(pubkey string) (string, error) {
 	var actorUrl string
-	if err := db.conn.Get(&actorUrl, "SELECT pub_actor_url FROM keys WHERE nostr_pubkey = $1", pubkey); err != nil {
+	if err := db.conn.Get(&actorUrl, "SELECT pub_actor_url FROM keys WHERE nostr_pubkey = $1", pubkey); err != nil && err != sql.ErrNoRows {
 		return "", err
 	}
 
@@ -165,7 +176,7 @@ func (db *Database) SaveFollowers(event nostr.Event, serviceUrl string) error {
 			INSERT INTO followers(nostr_pubkey, pub_actor_url)
 			VALUES ($1, $2)
 			ON CONFLICT (nostr_pubkey, pub_actor_url) DO NOTHING
-		`, event.PubKey, actorUrl); err != nil {
+		`, event.PubKey, actorUrl); err != nil && err != sql.ErrNoRows {
 			return err
 		}
 	}
